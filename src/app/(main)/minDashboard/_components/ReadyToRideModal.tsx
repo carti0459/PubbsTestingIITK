@@ -179,6 +179,26 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
 
       const bike = checkResponse.data.bike;
 
+      // CRITICAL: Validate bike is in correct state (operation: 0, status: active)
+      // Bike should be idle and ready to ride before unlock
+      const currentOperation = bike.operation?.toString() || "0";
+      const currentStatus = bike.status?.toLowerCase() || "active";
+
+      if (currentOperation !== "0" || currentStatus !== "active") {
+        console.error("❌ Bike not in ready state:", { 
+          operation: currentOperation, 
+          status: currentStatus,
+          expected: { operation: "0", status: "active" }
+        });
+        setStatus(`Error: Bike is not ready. Current state: operation=${currentOperation}, status=${currentStatus}. Bike must be idle (operation=0, status=active) to start a ride.`);
+        setIsProcessing(false);
+        setShowResetOption(true);
+        setTimeout(() => {
+          onCancel();
+        }, 5000);
+        return;
+      }
+
       setProgress(40);
       setStatus("Bike validated successfully! Ready to unlock.");
 
