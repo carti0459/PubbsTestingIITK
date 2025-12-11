@@ -181,8 +181,13 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
 
       // CRITICAL: Validate bike is in correct state (operation: 0, status: active)
       // Bike should be idle and ready to ride before unlock
-      const currentOperation = bike.operation?.toString() || "0";
-      const currentStatus = bike.status?.toLowerCase() || "active";
+      //const currentOperation = bike.operation?.toString() || "0";
+      //const currentStatus = bike.status?.toLowerCase() || "active";
+
+      const currentOperation = String(bike.operation ?? "0");
+      const currentStatus = String(bike.status ?? "active").toLowerCase();
+
+      console.debug("🔍 Bike current state:", { operation: bike.operation, status: bike.status });
 
       if (currentOperation !== "0" || currentStatus !== "active") {
         console.error("❌ Bike not in ready state:", { 
@@ -238,7 +243,7 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
         const unlockResponse = await axios.post("/api/bike-operation", {
           bikeId: validBikeId,
           operator,
-          operation: "1", // Unlock request
+          operation: "10", // Unlock request
           status: "busy",
           battery: bike.battery || "87",
           ridetime: bike.ridetime || "480",
@@ -259,7 +264,7 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
         setStatus("Waiting for bike to confirm unlock...");
 
         // Wait for bike to respond with operation=10 and status=busy
-        let attempts = 0;
+        /*let attempts = 0;
         const maxAttempts = 30;
 
         while (attempts < maxAttempts) {
@@ -285,17 +290,68 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           setStatus(
             `Waiting for bike confirmation... (${attempts}/${maxAttempts})`
           );
-        }
+        }*/
+        // ...existing code...
+       let attempts = 0;
+       const maxAttempts = 45;
+       const delayMs = 1000;
+       let confirmed = false;
+       let lastBikeState: any = null;
+       let lastPollResponse: any = null;
 
-        if (attempts >= maxAttempts) {
-          console.error("❌ [GSM] Bike did not confirm unlock within 30 seconds");
-          setStatus("Error: Bike did not respond. Please try again or contact support.");
-          setIsProcessing(false);
-          setTimeout(() => {
-            onCancel();
-          }, 3000);
-          return;
-        }
+       while (attempts < maxAttempts) {
+         await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+         try {
+           const waitResponse = await axios.get(
+             `/api/bikes?bikeId=${validBikeId}&operator=${operator}`
+           );
+
+           // Defensive logging to see what backend/device returns
+           console.debug("🔁 [GSM] Poll attempt", attempts + 1, {
+             success: waitResponse.data?.success,
+             bike: waitResponse.data?.bike,
+           });
+
+           lastPollResponse = waitResponse.data;
+           if (waitResponse.data?.success) {
+             const currentBike = waitResponse.data.bike || {};
+             lastBikeState = currentBike;
+
+             const op = String(currentBike.operation ?? "").trim();
+             const st = String(currentBike.status ?? "").toLowerCase().trim();
+
+             console.debug("🔍 [GSM] Normalized bike state:", { op, st });
+
+             if (op === "10" && st === "busy") {
+               console.log("✅ [GSM] Bike confirmed unlock (operation=10, status=busy)");
+               confirmed = true;
+               break;
+             }
+           } else {
+             console.warn("⚠️ [GSM] Poll response unsuccessful:", waitResponse.data);
+           }
+         } catch (pollErr) {
+           console.warn("⚠️ [GSM] Polling error (will retry):", pollErr);
+         }
+
+         attempts++;
+         setStatus(`Waiting for bike confirmation... (${attempts}/${maxAttempts})`);
+       }
+
+       if (!confirmed) {
+         const timeoutSeconds = Math.floor((maxAttempts * delayMs) / 1000);
+         console.error(`❌ [GSM] Bike did not confirm unlock within ${timeoutSeconds} seconds`);
+         console.error("Last poll response:", lastPollResponse);
+         console.error("Last bike state:", lastBikeState);
+         setStatus("Error: Bike did not respond. Please try again or contact support.");
+         setIsProcessing(false);
+         setTimeout(() => {
+           onCancel();
+         }, 3000);
+         return;
+       }
+// ...existing code...
 
         setProgress(100);
         setStatus("Bike is ready! Click Start to begin your ride.");
