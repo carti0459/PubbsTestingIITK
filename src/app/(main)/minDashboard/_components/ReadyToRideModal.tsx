@@ -382,13 +382,14 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
         try {
           // Step 1: Request Bluetooth device access
           setStatus("Scanning for bike Bluetooth device...");
+
+          console.debug("requestDevice options:", { validBikeId });
           
-          const device = await navigator.bluetooth.requestDevice({
-            filters: [
-              { namePrefix: validBikeId }, // Filter by bike ID as device name
-            ],
+          const device = await (navigator as any).bluetooth.requestDevice({
+            acceptAllDevices: true, // debug only — revert to filters for production
             optionalServices: [
-              "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+              "6e400001-b5a3-f393-e0a9-e50e24dcca9e", // Nordic UART Service (example)
+              // add any other service UUIDs you will access (lowercase)
             ],
           });
 
@@ -453,7 +454,7 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           const keyResponse = await new Promise<DataView>((resolve, reject) => {
             const timeout = setTimeout(() => {
               reject(new Error("Timeout waiting for communication key"));
-            }, 5000);
+            }, 100000);
 
             notifyCharacteristic.addEventListener(
               "characteristicvaluechanged",
@@ -491,7 +492,7 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           const unlockResponse = await new Promise<DataView>((resolve, reject) => {
             const timeout = setTimeout(() => {
               reject(new Error("Timeout waiting for unlock confirmation"));
-            }, 5000);
+            }, 100000);
 
             notifyCharacteristic.addEventListener(
               "characteristicvaluechanged",
