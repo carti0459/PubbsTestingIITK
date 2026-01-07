@@ -66,9 +66,9 @@ export default function UnlockButton() {
       });
       await unlock();
       alert("Unlock command sent. Waiting for confirmation...");
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("BLE error:", e);
-      alert("BLE error: " + (e?.message || e));
+      alert("BLE error: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setLoading(false);
     }
