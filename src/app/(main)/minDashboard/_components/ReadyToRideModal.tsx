@@ -6,40 +6,6 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { generateBookingId, createTripRecord } from "@/lib/booking-utils";
 
-interface BluetoothRequestDeviceOptions {
-  filters?: { namePrefix?: string }[];
-  optionalServices?: string[];
-}
-
-interface BluetoothDevice {
-  name?: string;
-  gatt?: BluetoothRemoteGATTServer;
-}
-
-interface BluetoothRemoteGATTServer {
-  connect(): Promise<BluetoothRemoteGATTServer>;
-  disconnect(): void;
-  getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>;
-}
-
-interface BluetoothRemoteGATTService {
-  getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
-}
-
-interface BluetoothRemoteGATTCharacteristic {
-  writeValue(value: ArrayBuffer | Uint8Array): Promise<void>;
-  startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
-  addEventListener(type: string, listener: (event: Event) => void): void;
-}
-
-declare global {
-  interface Navigator {
-    bluetooth?: {
-      requestDevice(options?: BluetoothRequestDeviceOptions): Promise<BluetoothDevice>;
-    };
-  }
-}
-
 // Helper function to prepare Bluetooth bytes (matching Flutter's prepareBytes function)
 const prepareBluetoothBytes = (
   communicationKey: number[],

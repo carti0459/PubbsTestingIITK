@@ -26,12 +26,12 @@ export default function useBikeBLE() {
       if (bike) {
         try {
           disconnect(bike);
-        } catch (e) {}
+        } catch {}
       }
     };
   }, [bike]);
 
-  const connect = useCallback(async (opts) => {
+  const connect = useCallback(async (opts: { optionalServices?: string[] }) => {
     try {
       const bd = await connectToBikeLock({
         optionalServices: opts?.optionalServices,

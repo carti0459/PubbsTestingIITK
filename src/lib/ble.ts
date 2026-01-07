@@ -1,3 +1,5 @@
+/// <reference types="web-bluetooth" />
+
 // ...existing code...
 /**
  * BLE helper utilities — replace the SERVICE/CHAR UUID placeholders below with your
@@ -50,7 +52,7 @@ export async function connectToBikeLock(
       optionalServices: [
         '00001530-1212-efde-1523-785feabcd123'
       ]
-    } as BluetoothRequestDeviceOptions);
+    } as RequestDeviceOptions);
 
     if (!device.gatt) throw new Error("Selected device has no GATT server");
 
@@ -97,7 +99,7 @@ export async function writeCommand(
   if (!ctx || !ctx.service) throw new Error("No connected service to write to");
   try {
     const char = await ctx.service.getCharacteristic(UNLOCK_UUID);
-    await char.writeValue(payload);
+    await char.writeValue(payload as BufferSource);
   } catch (err) {
     console.error("BLE writeCommand error:", err);
     throw err;
