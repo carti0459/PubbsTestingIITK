@@ -8,6 +8,7 @@ import type { Station } from "@/hooks/useStations";
 import { useGeofencing } from "@/hooks/useGeofencing";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOperator } from "@/contexts/OperatorContext";
+import { useBLEContext } from "@/contexts/BLEContext";
 
 interface MapLocation {
   key: string;
@@ -20,7 +21,7 @@ interface MapLocation {
   opacity?: number;
   isPolygon?: boolean;
   coordinates?: Array<{ lat: number; lng: number }>;
-  stationData?: any; 
+  stationData?: any;
 }
 
 interface BikeData {
@@ -64,6 +65,7 @@ interface ActiveRideData {
 export const useDashboard = () => {
   const { userData } = useAuth();
   const { selectedOperator } = useOperator();
+  const { disconnectBLE } = useBLEContext(); // Access BLE disconnect function
 
   const [selectedStation, setSelectedStation] = useState("");
   const [showSubscriptionWarning, setShowSubscriptionWarning] = useState(false);
@@ -173,10 +175,10 @@ export const useDashboard = () => {
         // Restore timer from database if available
         const tripData = activeRideData.tripData as
           | {
-              rideTimer?: number;
-              totalTripTime?: number;
-              holdTimer?: number;
-            }
+            rideTimer?: number;
+            totalTripTime?: number;
+            holdTimer?: number;
+          }
           | undefined;
 
         if (tripData) {
@@ -365,42 +367,8 @@ export const useDashboard = () => {
   const getMapLocations = useCallback((): MapLocation[] => {
     const stationLocations = selectedStation
       ? stations
-          .filter((station: Station) => station.id === selectedStation)
-          .map((station: Station) => {
-            const stationBikes = getBikesByStation(station.id);
-            const activeBikes = stationBikes.filter(
-              (bike) => bike.status === "active"
-            ).length;
-            const totalBikes = stationBikes.length;
-
-            return {
-              key: `station-${station.id}`,
-              location: station.coordinates,
-              title: station.name,
-              description: `Station: ${station.name} | Status: ${
-                station.status ? "Active" : "Inactive"
-              } | Bikes: ${activeBikes}/${totalBikes} available`,
-              radius: station.radius || 30,
-              status: station.status,
-              isPolygon: false,
-              stationData: {
-                stationId: station.id,
-                stationName: station.name,
-                areaId: station.areaId,
-                areaName: station.areaName,
-                stationLatitude: station.latitude.toString(),
-                stationLongitude: station.longitude.toString(),
-                stationCycleCount: totalBikes.toString(),
-                stationCycleDemand: activeBikes,
-                stationRadius: (station.radius || 30).toString(),
-                stationStatus: station.status,
-                stationType: station.type,
-                stationcyclecount: activeBikes.toString(),
-                lastUpdated: new Date().toISOString(),
-              },
-            };
-          })
-      : stations.map((station: Station) => {
+        .filter((station: Station) => station.id === selectedStation)
+        .map((station: Station) => {
           const stationBikes = getBikesByStation(station.id);
           const activeBikes = stationBikes.filter(
             (bike) => bike.status === "active"
@@ -411,9 +379,8 @@ export const useDashboard = () => {
             key: `station-${station.id}`,
             location: station.coordinates,
             title: station.name,
-            description: `Station: ${station.name} | Status: ${
-              station.status ? "Active" : "Inactive"
-            } | Bikes: ${activeBikes}/${totalBikes} available`,
+            description: `Station: ${station.name} | Status: ${station.status ? "Active" : "Inactive"
+              } | Bikes: ${activeBikes}/${totalBikes} available`,
             radius: station.radius || 30,
             status: station.status,
             isPolygon: false,
@@ -433,55 +400,87 @@ export const useDashboard = () => {
               lastUpdated: new Date().toISOString(),
             },
           };
-        });
+        })
+      : stations.map((station: Station) => {
+        const stationBikes = getBikesByStation(station.id);
+        const activeBikes = stationBikes.filter(
+          (bike) => bike.status === "active"
+        ).length;
+        const totalBikes = stationBikes.length;
+
+        return {
+          key: `station-${station.id}`,
+          location: station.coordinates,
+          title: station.name,
+          description: `Station: ${station.name} | Status: ${station.status ? "Active" : "Inactive"
+            } | Bikes: ${activeBikes}/${totalBikes} available`,
+          radius: station.radius || 30,
+          status: station.status,
+          isPolygon: false,
+          stationData: {
+            stationId: station.id,
+            stationName: station.name,
+            areaId: station.areaId,
+            areaName: station.areaName,
+            stationLatitude: station.latitude.toString(),
+            stationLongitude: station.longitude.toString(),
+            stationCycleCount: totalBikes.toString(),
+            stationCycleDemand: activeBikes,
+            stationRadius: (station.radius || 30).toString(),
+            stationStatus: station.status,
+            stationType: station.type,
+            stationcyclecount: activeBikes.toString(),
+            lastUpdated: new Date().toISOString(),
+          },
+        };
+      });
 
     const geofenceLocations =
       showGeofencing && !selectedStation
         ? (geofences
-            .filter((geofence) => geofence.isActive)
-            .map((geofence) => {
-              const getColor = (type: string) => {
-                switch (type) {
-                  case "allowed":
-                    return "#10B981";
-                  case "forbidden":
-                    return "#EF4444";
-                  case "station":
-                    return "#3B82F6";
-                  default:
-                    return "#6B7280";
-                }
-              };
-
-              if (geofence.isPolygon && Array.isArray(geofence.coordinates)) {
-                const center = calculatePolygonCenter(geofence.coordinates);
-                return {
-                  key: `geofence-${geofence.id}`,
-                  location: center,
-                  title: geofence.name,
-                  description: `${geofence.type} boundary area`,
-                  color: getColor(geofence.type),
-                  opacity: geofence.type === "allowed" ? 0.2 : 0.3,
-                  isPolygon: true,
-                  coordinates: geofence.coordinates,
-                };
-              } else if (!Array.isArray(geofence.coordinates)) {
-                return {
-                  key: `geofence-${geofence.id}`,
-                  location: geofence.coordinates,
-                  title: geofence.name,
-                  description: `${geofence.type} area • ${
-                    geofence.radius || 100
-                  }m radius`,
-                  radius: geofence.radius || 100,
-                  color: getColor(geofence.type),
-                  opacity: 0.3,
-                  isPolygon: false,
-                };
+          .filter((geofence) => geofence.isActive)
+          .map((geofence) => {
+            const getColor = (type: string) => {
+              switch (type) {
+                case "allowed":
+                  return "#10B981";
+                case "forbidden":
+                  return "#EF4444";
+                case "station":
+                  return "#3B82F6";
+                default:
+                  return "#6B7280";
               }
-              return null;
-            })
-            .filter(Boolean) as MapLocation[])
+            };
+
+            if (geofence.isPolygon && Array.isArray(geofence.coordinates)) {
+              const center = calculatePolygonCenter(geofence.coordinates);
+              return {
+                key: `geofence-${geofence.id}`,
+                location: center,
+                title: geofence.name,
+                description: `${geofence.type} boundary area`,
+                color: getColor(geofence.type),
+                opacity: geofence.type === "allowed" ? 0.2 : 0.3,
+                isPolygon: true,
+                coordinates: geofence.coordinates,
+              };
+            } else if (!Array.isArray(geofence.coordinates)) {
+              return {
+                key: `geofence-${geofence.id}`,
+                location: geofence.coordinates,
+                title: geofence.name,
+                description: `${geofence.type} area • ${geofence.radius || 100
+                  }m radius`,
+                radius: geofence.radius || 100,
+                color: getColor(geofence.type),
+                opacity: 0.3,
+                isPolygon: false,
+              };
+            }
+            return null;
+          })
+          .filter(Boolean) as MapLocation[])
         : [];
 
     return [...stationLocations, ...geofenceLocations];
@@ -896,6 +895,12 @@ export const useDashboard = () => {
         // Don't throw error here, bike operation succeeded
       }
 
+      // CRITICAL FIX: Disconnect BLE when ride ends
+      // Device was stored in global context when bike was unlocked in ReadyToRideModal
+      console.log("🔌 [End Ride] Disconnecting BLE device...");
+      disconnectBLE();
+      console.log("✅ [End Ride] BLE disconnected successfully");
+
       // 3. Reset UI state
       setShowRideBooking(false);
       setBikeData(null);
@@ -1135,8 +1140,7 @@ export const useDashboard = () => {
                   `⚠️ Bike not available. Status: ${bike.status || "unknown"}`
                 );
                 toast.error(
-                  `Bike is not available for use. Current status: ${
-                    bike.status || "unknown"
+                  `Bike is not available for use. Current status: ${bike.status || "unknown"
                   }`
                 );
                 return;
@@ -1159,7 +1163,7 @@ export const useDashboard = () => {
               console.error("❌ Failed to parse error response:", parseError);
               errorMessage = `HTTP ${bikeResponse.status}: ${bikeResponse.statusText}`;
             }
-            
+
             toast.error(`Failed to fetch bike data: ${errorMessage}`);
             return;
           }

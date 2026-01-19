@@ -5,6 +5,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { generateBookingId, createTripRecord } from "@/lib/booking-utils";
+import { useBLEContext } from "@/contexts/BLEContext";
 
 // Helper function to prepare Bluetooth bytes (matching Flutter's prepareBytes function)
 const prepareBluetoothBytes = (
@@ -84,12 +85,20 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
   onReset,
 }) => {
   const { userData } = useAuth();
+  const { setBLEDevice: setGlobalBLEDevice } = useBLEContext(); // Access BLE context
+  
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("Checking bike status...");
   const [isProcessing, setIsProcessing] = useState(false);
   const [showResetOption, setShowResetOption] = useState(false);
   const [showUnlockButton, setShowUnlockButton] = useState(false);
   const [validatedBikeData, setValidatedBikeData] = useState<any>(null);
+  
+  // STEP 1: State tracking for cancel rollback
+  // wasUnlocked: Tracks if bike was successfully unlocked, determines if rollback is needed
+  // bleDevice: Stores BLE device reference to send LOCK command during cancel
+  const [wasUnlocked, setWasUnlocked] = useState(false);
+  const [bleDevice, setBleDevice] = useState<BluetoothDevice | null>(null);
 
   useEffect(() => {
     if (isOpen && bikeData) {
@@ -97,6 +106,11 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
       setShowUnlockButton(false);
       setValidatedBikeData(null);
       setShowResetOption(false);
+      
+      // STEP 2: Reset rollback states for each new attempt
+      setWasUnlocked(false);
+      setBleDevice(null);
+      
       checkBikeAndInitiateRide();
     }
   }, [isOpen, bikeData]);
@@ -186,6 +200,51 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
       setTimeout(() => {
         onCancel();
       }, 3000);
+    }
+  };
+
+  // STEP 5: Helper function to send LOCK command via BLE
+  // This re-locks the physical bike when user cancels after unlock
+  const sendLockCommand = async (device: BluetoothDevice): Promise<boolean> => {
+    try {
+      console.log("🔒 [BLE] Attempting to re-lock bike...");
+      
+      // Check if device is still connected
+      if (!device.gatt?.connected) {
+        console.log("⚠️ [BLE] Device not connected, cannot send LOCK command");
+        return false;
+      }
+
+      // Get the Nordic UART Service
+      const server = device.gatt;
+      const service = await server.getPrimaryService(
+        "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+      );
+
+      const writeCharacteristic = await service.getCharacteristic(
+        "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // TX (write)
+      );
+
+      // Prepare LOCK command (similar to unlock but command is different)
+      const appId = 345678;
+      const communicationKey = [1, 2, 3, 4]; // Use same key as unlock
+      const lockCommand = [2, 2]; // LOCK_COMMAND (unlock was [2, 1])
+      
+      const lockBytes = prepareBluetoothBytes(
+        communicationKey,
+        appId,
+        lockCommand,
+        [0, 0]
+      );
+
+      // Send LOCK command
+      await writeCharacteristic.writeValue(new Uint8Array(lockBytes));
+      console.log("✅ [BLE] LOCK command sent successfully");
+      
+      return true;
+    } catch (error) {
+      console.error("❌ [BLE] Failed to send LOCK command:", error);
+      return false;
     }
   };
 
@@ -360,6 +419,12 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           });
 
           console.log(`✅ [BLE] Found device: ${device.name}`);
+          
+          // STEP 3: Store device reference for potential rollback on cancel
+          setBleDevice(device);
+          // CRITICAL FIX: Also store in global context so useDashboard can disconnect it
+          setGlobalBLEDevice(device);
+          console.log("🌐 [BLE] Device stored in global context for disconnect on ride end");
 
           // Step 2: Connect to GATT server
           setProgress(60);
@@ -483,9 +548,15 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
             ridetime: bike.ridetime || "480",
           });
 
-          // Disconnect from device
-          device.gatt?.disconnect();
-          console.log("✅ [BLE] Disconnected from device");
+          // STEP 4: Mark that bike was successfully unlocked
+          // This flag tells cancel handler that rollback is needed
+          setWasUnlocked(true);
+
+          // FIX: DO NOT disconnect from device - keep connection alive during ride
+          // The connection should stay active to allow keep-alive heartbeat and ride tracking
+          // Connection will be managed by useBikeBLE hook if integrated, or manually disconnected when ride ends
+          // device.gatt?.disconnect(); // ❌ REMOVED - This was causing premature disconnection
+          console.log("✅ [BLE] Leaving device connected for ride duration");
 
           setProgress(100);
           setStatus("Bike unlocked successfully! Click Start to begin your ride.");
@@ -674,6 +745,70 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
 
       return null;
     }
+  };
+
+  // STEP 6: Complete rollback handler for cancel action
+  // This ensures bike is returned to available state when user cancels after unlock
+  const handleCancelWithRollback = async () => {
+    // Only perform rollback if bike was successfully unlocked
+    if (wasUnlocked && validatedBikeData) {
+      console.log("🔄 [Rollback] Starting cancel rollback...");
+      setStatus("Canceling and resetting bike...");
+      
+      try {
+        // Step 1: Re-lock the physical bike if BLE is still connected
+        if (bleDevice && bleDevice.gatt?.connected) {
+          console.log("🔒 [Rollback] Attempting to re-lock bike via BLE...");
+          const lockSuccess = await sendLockCommand(bleDevice);
+          
+          if (lockSuccess) {
+            console.log("✅ [Rollback] Bike re-locked successfully");
+          } else {
+            console.warn("⚠️ [Rollback] Failed to re-lock bike, continuing with DB reset");
+          }
+        } else {
+          console.log("ℹ️ [Rollback] BLE not connected, skipping physical re-lock");
+        }
+
+        // Step 2: Reset database state (CRITICAL - always attempt this)
+        console.log("📝 [Rollback] Resetting database state...");
+        try {
+          const { validBikeId, operator, bike } = validatedBikeData;
+          
+          await axios.post("/api/bike-operation", {
+            bikeId: validBikeId,
+            operator,
+            operation: "0",    // Reset to idle
+            status: "active",  // Reset to available
+            battery: bike.battery || "87",
+            ridetime: bike.ridetime || "480",
+          });
+          
+          console.log("✅ [Rollback] Database state reset successfully");
+        } catch (dbError) {
+          console.error("❌ [Rollback] Failed to reset database:", dbError);
+          // Log but continue - don't trap user in modal
+        }
+
+        // Step 3: Disconnect BLE to clean up resources
+        if (bleDevice && bleDevice.gatt?.connected) {
+          console.log("🔌 [Rollback] Disconnecting BLE...");
+          bleDevice.gatt.disconnect();
+          console.log("✅ [Rollback] BLE disconnected");
+        }
+
+        console.log("✅ [Rollback] Cancel rollback completed");
+        
+      } catch (error) {
+        console.error("❌ [Rollback] Unexpected error during rollback:", error);
+        // Still proceed to close modal - don't trap user
+      }
+    } else {
+      console.log("ℹ️ [Cancel] No rollback needed (bike was not unlocked)");
+    }
+
+    // Always close the modal, even if rollback failed
+    onCancel();
   };
 
   const handleStartRide = async () => {
@@ -881,7 +1016,7 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           )}
 
           <button
-            onClick={onCancel}
+            onClick={handleCancelWithRollback} // STEP 7: Use rollback handler
             disabled={isProcessing && progress < 100}
             className={`flex-1 bg-transparent border border-gray-400 text-gray-400 py-3 rounded-lg font-medium hover:bg-gray-400 hover:text-slate-800 transition-colors ${
               isProcessing && progress < 100

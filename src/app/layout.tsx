@@ -3,6 +3,7 @@ import { Poppins } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { OperatorProvider } from "@/contexts/OperatorContext";
+import { BLEProvider } from "@/contexts/BLEContext";
 import { Toaster } from "@/components/ui/sonner";
 import PWAInstallPrompt from "@/components/common/PWAInstallPrompt";
 import Script from "next/script";
@@ -129,7 +130,9 @@ export default function RootLayout({
         }}
       >
         <AuthProvider>
-          <OperatorProvider>{children}</OperatorProvider>
+          <OperatorProvider>
+            <BLEProvider>{children}</BLEProvider>
+          </OperatorProvider>
         </AuthProvider>
         <Toaster richColors />
         <PWAInstallPrompt />
