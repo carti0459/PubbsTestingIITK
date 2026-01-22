@@ -95,10 +95,12 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
   const [validatedBikeData, setValidatedBikeData] = useState<any>(null);
   
   // STEP 1: State tracking for cancel rollback
-  // wasUnlocked: Tracks if bike was successfully unlocked, determines if rollback is needed
+  // bikePhysicallyUnlocked: Tracks if bike was physically unlocked via BLE (for rollback)
   // bleDevice: Stores BLE device reference to send LOCK command during cancel
-  const [wasUnlocked, setWasUnlocked] = useState(false);
+  // unlockTimer: Auto-cancel timer (2 minutes after unlock)
+  const [bikePhysicallyUnlocked, setBikePhysicallyUnlocked] = useState(false);
   const [bleDevice, setBleDevice] = useState<BluetoothDevice | null>(null);
+  const [unlockTimer, setUnlockTimer] = useState<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (isOpen && bikeData) {
@@ -108,8 +110,12 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
       setShowResetOption(false);
       
       // STEP 2: Reset rollback states for each new attempt
-      setWasUnlocked(false);
+      setBikePhysicallyUnlocked(false);
       setBleDevice(null);
+      if (unlockTimer) {
+        clearTimeout(unlockTimer);
+        setUnlockTimer(null);
+      }
       
       checkBikeAndInitiateRide();
     }
@@ -538,19 +544,21 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           const unlockData = new Uint8Array(unlockResponse.buffer);
           console.log("✅ [BLE] Unlock response:", Array.from(unlockData));
 
-          // Step 9: Update bike status in Firebase
-          await axios.post("/api/bike-operation", {
-            bikeId: validBikeId,
-            operator,
-            operation: "10", // Mark as unlocked
-            status: "busy",
-            battery: bike.battery || "87",
-            ridetime: bike.ridetime || "480",
-          });
+          // FLOW CHANGE: Database update moved to handleStartRide
+          // Only mark that bike was physically unlocked (for rollback on cancel)
+          setBikePhysicallyUnlocked(true);
+          console.log("🔓 [Flow] Bike physically unlocked via BLE (DB not updated yet)");
 
-          // STEP 4: Mark that bike was successfully unlocked
-          // This flag tells cancel handler that rollback is needed
-          setWasUnlocked(true);
+          
+          // Start 2-minute auto-cancel timer to prevent bikes from being left unlocked
+          const timer = setTimeout(() => {
+            console.log("⏱️ [Unlock] 2-minute timeout reached, auto-canceling...");
+            toast.warning("Unlock expired. Please unlock again to start your ride.");
+            handleCancelWithRollback();
+         }, 2 * 60 * 1000); // 2 minutes
+          
+          setUnlockTimer(timer);
+          console.log("⏱️ [Unlock] Started 2-minute auto-cancel timer");
 
           // FIX: DO NOT disconnect from device - keep connection alive during ride
           // The connection should stay active to allow keep-alive heartbeat and ride tracking
@@ -750,10 +758,17 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
   // STEP 6: Complete rollback handler for cancel action
   // This ensures bike is returned to available state when user cancels after unlock
   const handleCancelWithRollback = async () => {
-    // Only perform rollback if bike was successfully unlocked
-    if (wasUnlocked && validatedBikeData) {
+    // Clear unlock timer if active
+    if (unlockTimer) {
+      clearTimeout(unlockTimer);
+      setUnlockTimer(null);
+      console.log("⏱️ [Cancel] Cleared auto-cancel timer");
+    }
+
+    // Only perform rollback if bike was physically unlocked via BLE
+    if (bikePhysicallyUnlocked && validatedBikeData) {
       console.log("🔄 [Rollback] Starting cancel rollback...");
-      setStatus("Canceling and resetting bike...");
+      setStatus("Canceling and re-locking bike...");
       
       try {
         // Step 1: Re-lock the physical bike if BLE is still connected
@@ -764,33 +779,14 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
           if (lockSuccess) {
             console.log("✅ [Rollback] Bike re-locked successfully");
           } else {
-            console.warn("⚠️ [Rollback] Failed to re-lock bike, continuing with DB reset");
+            console.warn("⚠️ [Rollback] Failed to re-lock bike");
           }
         } else {
           console.log("ℹ️ [Rollback] BLE not connected, skipping physical re-lock");
         }
 
-        // Step 2: Reset database state (CRITICAL - always attempt this)
-        console.log("📝 [Rollback] Resetting database state...");
-        try {
-          const { validBikeId, operator, bike } = validatedBikeData;
-          
-          await axios.post("/api/bike-operation", {
-            bikeId: validBikeId,
-            operator,
-            operation: "0",    // Reset to idle
-            status: "active",  // Reset to available
-            battery: bike.battery || "87",
-            ridetime: bike.ridetime || "480",
-          });
-          
-          console.log("✅ [Rollback] Database state reset successfully");
-        } catch (dbError) {
-          console.error("❌ [Rollback] Failed to reset database:", dbError);
-          // Log but continue - don't trap user in modal
-        }
-
-        // Step 3: Disconnect BLE to clean up resources
+        // FLOW CHANGE: No database reset needed (database was never updated)
+        console.log("ℹ️ [Rollback] Skipping DB reset (DB was never updated in new flow)");
         if (bleDevice && bleDevice.gatt?.connected) {
           console.log("🔌 [Rollback] Disconnecting BLE...");
           bleDevice.gatt.disconnect();
@@ -814,9 +810,16 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
   const handleStartRide = async () => {
     if (!bikeData) return;
 
+    // Clear unlock timer since user is starting ride
+    if (unlockTimer) {
+      clearTimeout(unlockTimer);
+      setUnlockTimer(null);
+      console.log("⏱️ [Start Ride] Cleared auto-cancel timer");
+    }
+
     setIsProcessing(true);
-    setProgress(80);
-    setStatus("Creating trip record...");
+    setProgress(20);
+    setStatus("Validating bike availability...");
 
     try {
       const bikeId = bikeData?.bikeId || bikeData?.id;
@@ -834,7 +837,11 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
 
       const validBikeId: string = bikeId;
 
-      // Get current bike data - bike should already be unlocked with operation="10" from QR scan
+      // FLOW CHANGE: Validate bike is still available before updating DB
+      setProgress(40);
+      setStatus("Checking bike availability...");
+      console.log("🔍 [Start Ride] Validating bike is still available...");
+      
       const checkResponse = await axios.get(
         `/api/bikes?bikeId=${validBikeId}&operator=${operator}`
       );
@@ -851,16 +858,39 @@ const ReadyToRideModal: React.FC<ReadyToRideModalProps> = ({
 
       const bike = checkResponse.data.bike;
 
-      // Verify bike is still in unlocked state (operation="10" and status="busy")
-      if (bike.operation !== "10" || bike.status !== "busy") {
-        console.error("❌ Bike not in ready state:", { operation: bike.operation, status: bike.status });
-        setStatus("Error: Bike is not ready. Please scan QR code again.");
+      // FLOW CHANGE: Safety check - verify bike is still active/available
+      if (bike.status !== "active") {
+        console.error("❌ Bike is no longer available. Status:", bike.status);
+        toast.error("Bike is no longer available. Please try another bike.");
+        setStatus("Bike no longer available");
         setIsProcessing(false);
         setTimeout(() => {
           onCancel();
         }, 3000);
         return;
       }
+
+      console.log("✅ [Start Ride] Bike is available, proceeding with ride start");
+
+      // FLOW CHANGE: NOW update database (this used to happen in handleUnlockBike)
+      setProgress(60);
+      setStatus("Updating bike status...");
+      console.log("📝 [Start Ride] Updating database (operation=1, status=busy)...");
+      
+      await axios.post("/api/bike-operation", {
+        bikeId: validBikeId,
+        operator,
+        operation: "1", // Mark as in use
+        status: "busy",
+        battery: bike.battery || "87",
+        ridetime: bike.ridetime || "480",
+      });
+      
+      console.log("✅ [Start Ride] Database updated successfully");
+
+      // Continue with trip creation
+      setProgress(80);
+      setStatus("Creating trip record...");
 
       setProgress(90);
       setStatus("Finalizing trip setup...");
